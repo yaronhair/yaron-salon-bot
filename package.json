@@ -5,24 +5,14 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "node simple-dashboard.js",
-    "test": "node test-new.js"
+    "build": "echo 'No build step required'"
   },
-  "dependencies": {
-    "xlsx": "^0.18.5"
-  },
+  "dependencies": {},
   "engines": {
-    "node": ">=18.0.0"
+    "node": "18.x"
   },
-  "keywords": [
-    "chatbot", 
-    "ai", 
-    "salon", 
-    "whatsapp", 
-    "automation",
-    "render",
-    "cloud"
-  ],
+  "keywords": ["chatbot", "ai", "salon"],
   "author": "Yaron Salon",
   "license": "MIT"
+}
 }
