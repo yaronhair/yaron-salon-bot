@@ -1,0 +1,28 @@
+{
+  "name": "yaron-salon-bot-render",
+  "version": "1.0.0",
+  "description": "בוט AI חכם למספרת ירון - Render Cloud",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node simple-dashboard.js",
+    "test": "node test-new.js"
+  },
+  "dependencies": {
+    "xlsx": "^0.18.5"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "keywords": [
+    "chatbot", 
+    "ai", 
+    "salon", 
+    "whatsapp", 
+    "automation",
+    "render",
+    "cloud"
+  ],
+  "author": "Yaron Salon",
+  "license": "MIT"
+}
