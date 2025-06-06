@@ -4,8 +4,7 @@
   "description": "בוט AI חכם למספרת ירון - Render Cloud",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js",
-    "build": "echo 'No build step required'"
+    "start": "node server.js"
   },
   "dependencies": {},
   "engines": {
@@ -14,5 +13,4 @@
   "keywords": ["chatbot", "ai", "salon"],
   "author": "Yaron Salon",
   "license": "MIT"
-}
 }
