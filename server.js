@@ -1,50 +1,220 @@
-// server.js - שרת ענן מותאם ל-Render (מתוקן)
+// server.js - שרת בוט מספרת ירון מלא עם וואטסאפ
 
 const http = require('http');
 const url = require('url');
 const fs = require('fs');
 
-// ייבוא הבוט
-const YaronSalonBot = require('./yaron-salon-bot');
+// מחלקת ניתוח רגשות
+class EmotionAnalyzer {
+    constructor() {
+        this.emotionKeywords = {
+            happy: ['שמח', 'מעולה', 'נהדר', 'אהבתי', 'מושלם', 'תודה', 'כיף', 'שמחה', '😊', '😃', '❤️', '💕'],
+            frustrated: ['כועס', 'זוועה', 'נוראי', 'מאוכזב', 'גרוע', 'לא טוב', 'בעיה', 'כעס', '😡', '😤'],
+            anxious: ['דאגה', 'פחד', 'מתח', 'חרדה', 'מודאג', 'לחוץ', 'בהלה', 'רגש'],
+            excited: ['נרגש', 'מתרגש', 'בקושי', 'ממתין', 'לא יכול לחכות', '😍', '🤩'],
+            neutral: ['טוב', 'בסדר', 'אוקיי', 'הבנתי']
+        };
+    }
 
+    analyzeEmotion(text) {
+        const lowerText = text.toLowerCase();
+        let scores = {};
+        let maxScore = 0;
+        let dominantEmotion = 'neutral';
+
+        for (let emotion in this.emotionKeywords) {
+            scores[emotion] = 0;
+            this.emotionKeywords[emotion].forEach(keyword => {
+                if (lowerText.includes(keyword)) {
+                    scores[emotion]++;
+                }
+            });
+
+            if (scores[emotion] > maxScore) {
+                maxScore = scores[emotion];
+                dominantEmotion = emotion;
+            }
+        }
+
+        return {
+            dominantEmotion,
+            scores,
+            intensity: maxScore > 0 ? Math.min(maxScore * 0.3, 1) : 0.1,
+            needsHumanResponse: ['frustrated', 'anxious'].includes(dominantEmotion) && maxScore > 1
+        };
+    }
+}
+
+// מחלקת בוט מספרת ירון
+class YaronSalonBot {
+    constructor() {
+        this.customers = [];
+        this.conversationLog = [];
+        this.emotionAnalyzer = new EmotionAnalyzer();
+        
+        this.priceList = {
+            "תספורת גבר": 80,
+            "תספורת אישה": 120,
+            "צבע": 200,
+            "גוונים": 250,
+            "פן": 150,
+            "קרקפת": 100,
+            "זקן": 50,
+            "עיצוב זקן": 60,
+            "שיקום שיער": 300,
+            "החלקה": 400,
+            "תספורת ילד": 60
+        };
+
+        this.responses = {
+            greeting: [
+                "שלום! ברוכים הבאים למספרת ירון! 💇‍♂️",
+                "היי! איך אפשר לעזור לכם היום?",
+                "שלום וברוכים הבאים! מה תרצו לדעת?"
+            ],
+            prices: [
+                "הנה המחירון שלנו:",
+                "המחירים אצלנו:",
+                "ככה זה נראה במחירים:"
+            ],
+            appointment: [
+                "בשמחה! אפשר לקבוע תור בטלפון: 03-1234567",
+                "נהדר! התקשרו אלינו: 03-1234567 ונקבע תור",
+                "מעולה! הטלפון שלנו: 03-1234567"
+            ],
+            location: [
+                "המספרה נמצאת ברחוב הראשי 123, תל אביב",
+                "הכתובת שלנו: רחוב הראשי 123, תל אביב",
+                "אנחנו ברחוב הראשי 123, תל אביב"
+            ],
+            hours: [
+                "שעות הפעילות: א'-ה' 9:00-19:00, ו' 9:00-15:00",
+                "אנחנו פתוחים: א'-ה' 9:00-19:00, ו' 9:00-15:00",
+                "שעות העבודה: א'-ה' 9:00-19:00, ו' 9:00-15:00"
+            ]
+        };
+
+        this.loadCustomers();
+    }
+
+    loadCustomers() {
+        try {
+            if (fs.existsSync('./customers.csv')) {
+                const data = fs.readFileSync('./customers.csv', 'utf8');
+                const lines = data.split('\n').slice(1); // Skip header
+                this.customers = lines.filter(line => line.trim()).map(line => {
+                    const [name, phone, lastVisit, treatments, notes] = line.split(',');
+                    return { name, phone, lastVisit, treatments, notes };
+                });
+            }
+        } catch (error) {
+            console.log('לא ניתן לטעון קובץ לקוחות, מתחיל עם רשימה ריקה');
+            this.customers = [];
+        }
+    }
+
+    handleMessage(phone, message) {
+        const timestamp = new Date().toISOString();
+        const emotion = this.emotionAnalyzer.analyzeEmotion(message);
+        
+        // שמירת השיחה
+        this.conversationLog.push({
+            phone,
+            message,
+            timestamp,
+            emotion: emotion.dominantEmotion
+        });
+
+        const lowerMessage = message.toLowerCase();
+        let response = "";
+
+        // זיהוי כוונות
+        if (this.containsWords(lowerMessage, ['שלום', 'היי', 'בוקר טוב', 'ערב טוב'])) {
+            response = this.getRandomResponse('greeting');
+        }
+        else if (this.containsWords(lowerMessage, ['מחיר', 'עולה', 'כמה', 'מחירון', 'עלות'])) {
+            response = this.getPriceInfo(lowerMessage);
+        }
+        else if (this.containsWords(lowerMessage, ['תור', 'קובע', 'פנוי', 'זמין', 'מתי'])) {
+            response = this.getRandomResponse('appointment');
+        }
+        else if (this.containsWords(lowerMessage, ['איפה', 'כתובת', 'מיקום', 'מקום'])) {
+            response = this.getRandomResponse('location');
+        }
+        else if (this.containsWords(lowerMessage, ['שעות', 'פתוח', 'זמני', 'מתי פתוחים'])) {
+            response = this.getRandomResponse('hours');
+        }
+        else if (this.containsWords(lowerMessage, ['תודה', 'תשובה', 'עזרה'])) {
+            response = "בשמחה! יש עוד משהו שאוכל לעזור? 😊";
+        }
+        else {
+            response = "אני כאן לעזור! תוכלו לשאול על מחירים, תורים, מיקום או שעות פתיחה. איך אפשר לעזור?";
+        }
+
+        // התייחסות לרגש
+        if (emotion.needsHumanResponse) {
+            response += "\n\nאני רואה שיש לכם דאגה, אשמח שתתקשרו אלינו ישירות: 03-1234567";
+        }
+
+        return response;
+    }
+
+    containsWords(text, words) {
+        return words.some(word => text.includes(word));
+    }
+
+    getRandomResponse(category) {
+        const responses = this.responses[category];
+        return responses[Math.floor(Math.random() * responses.length)];
+    }
+
+    getPriceInfo(message) {
+        let response = this.getRandomResponse('prices') + "\n\n";
+        
+        // חיפוש טיפול ספציפי
+        for (let treatment in this.priceList) {
+            if (message.includes(treatment.toLowerCase()) || 
+                message.includes(treatment.split(' ')[0].toLowerCase())) {
+                return `${treatment}: ${this.priceList[treatment]} ₪`;
+            }
+        }
+
+        // הצגת כל המחירון
+        for (let treatment in this.priceList) {
+            response += `${treatment}: ${this.priceList[treatment]} ₪\n`;
+        }
+
+        return response;
+    }
+
+    getAnalytics() {
+        const emotionStats = {};
+        this.conversationLog.forEach(msg => {
+            emotionStats[msg.emotion] = (emotionStats[msg.emotion] || 0) + 1;
+        });
+
+        return {
+            totalMessages: this.conversationLog.length,
+            totalCustomers: this.customers.length,
+            emotionStats,
+            lastMessage: this.conversationLog[this.conversationLog.length - 1] || null
+        };
+    }
+
+    start() {
+        console.log('🤖 יירון הבוט מוכן לפעולה!');
+    }
+}
+
+// מחלקת השרת הראשית
 class RenderBotServer {
     constructor() {
         this.port = process.env.PORT || 3000;
-        
-        // אתחול הבוט עם נתוני דוגמה אם אין קובץ לקוחות
-        this.initializeBot();
+        this.bot = new YaronSalonBot();
+        this.bot.start();
         this.setupServer();
         
         console.log('🌐 Render Bot Server initializing...');
-    }
-
-    initializeBot() {
-        try {
-            // נסיון לטעון קובץ לקוחות קיים
-            this.bot = new YaronSalonBot('./customers.csv');
-        } catch (error) {
-            console.log('📋 No customers file found, creating sample data...');
-            this.createSampleData();
-            this.bot = new YaronSalonBot('./customers.csv');
-        }
-        
-        this.bot.start();
-        console.log('✅ Bot initialized successfully');
-    }
-
-    createSampleData() {
-        // יצירת נתוני דוגמה אם אין קובץ לקוחות
-        const sampleData = `שם,טלפון,ביקור אחרון,טיפולים,הערות
-דוגמה ראשונה,0501234567,2024-01-15,תספורת גבר,לקוח VIP
-דוגמה שנייה,0527654321,2024-02-10,קרקפת ושיקום,בעיות קרקפת
-דוגמה שלישית,0503456789,2024-01-20,גוונים וצבע,אוהבת גוונים חמים`;
-        
-        try {
-            fs.writeFileSync('./customers.csv', sampleData);
-            console.log('📝 Sample customer data created');
-        } catch (error) {
-            console.log('⚠️ Could not create sample data, using empty dataset');
-        }
     }
 
     setupServer() {
@@ -57,13 +227,10 @@ class RenderBotServer {
         const parsedUrl = url.parse(req.url, true);
         const path = parsedUrl.pathname;
         
-        // הגדרת headers לבטיחות וCORS
+        // הגדרת headers
         res.setHeader('Access-Control-Allow-Origin', '*');
         res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
         res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-        res.setHeader('X-Content-Type-Options', 'nosniff');
-        res.setHeader('X-Frame-Options', 'DENY');
-        res.setHeader('X-XSS-Protection', '1; mode=block');
         
         if (req.method === 'OPTIONS') {
             res.writeHead(200);
@@ -82,8 +249,6 @@ class RenderBotServer {
                 this.handleStats(res);
             } else if (path === '/health' || path === '/api/health') {
                 this.handleHealth(res);
-            } else if (path === '/api/prices') {
-                this.handlePrices(res);
             } else {
                 this.handle404(res);
             }
@@ -152,7 +317,7 @@ class RenderBotServer {
             const challenge = parsedUrl.query['hub.challenge'];
 
             // אימות webhook למטא/וואטסאפ
-            if (mode === 'subscribe' && token === process.env.VERIFY_TOKEN) {
+            if (mode === 'subscribe' && token === (process.env.VERIFY_TOKEN || 'yaron_salon_webhook_2024')) {
                 console.log('✅ Webhook verified successfully');
                 res.writeHead(200, { 'Content-Type': 'text/plain' });
                 res.end(challenge);
@@ -191,6 +356,7 @@ class RenderBotServer {
                         if (phone && text) {
                             const response = this.bot.handleMessage(phone, text);
                             console.log(`📱 WhatsApp message processed: ${phone} -> ${text}`);
+                            console.log(`🤖 Bot response: ${response}`);
                         }
                     }
                 }
@@ -229,10 +395,7 @@ class RenderBotServer {
                     timestamp: new Date().toISOString(),
                     environment: process.env.NODE_ENV || 'development'
                 },
-                recentMessages: this.bot.conversationLog.slice(-10).map(msg => ({
-                    ...msg,
-                    message: msg.message.substring(0, 100) // הגבלת אורך להצגה
-                }))
+                recentMessages: this.bot.conversationLog.slice(-10)
             };
 
             this.sendResponse(res, 200, serverStats);
@@ -253,27 +416,10 @@ class RenderBotServer {
                 customers: this.bot.customers.length,
                 messages: this.bot.conversationLog.length,
                 status: 'operational'
-            },
-            memory: {
-                used: Math.round(process.memoryUsage().heapUsed / 1024 / 1024),
-                total: Math.round(process.memoryUsage().heapTotal / 1024 / 1024)
             }
         };
 
         this.sendResponse(res, 200, health);
-    }
-
-    handlePrices(res) {
-        try {
-            const prices = {
-                ...this.bot.priceList,
-                lastUpdated: new Date().toISOString(),
-                currency: 'ILS'
-            };
-            this.sendResponse(res, 200, prices);
-        } catch (error) {
-            this.sendResponse(res, 500, { error: 'Failed to get prices' });
-        }
     }
 
     handle404(res) {
@@ -285,8 +431,7 @@ class RenderBotServer {
                 'POST /api/message',
                 'GET/POST /api/webhook', 
                 'GET /api/stats',
-                'GET /api/health',
-                'GET /api/prices'
+                'GET /api/health'
             ],
             timestamp: new Date().toISOString()
         };
@@ -323,142 +468,205 @@ class RenderBotServer {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>בוט מספרת ירון - Render Cloud</title>
-    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🤖</text></svg>">
+    <title>בוט מספרת ירון - WhatsApp Ready</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { 
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            font-family: system-ui, -apple-system, sans-serif;
+            background: linear-gradient(135deg, #25D366, #128C7E);
             min-height: 100vh;
             padding: 20px;
         }
-        .container { max-width: 1200px; margin: 0 auto; }
+        .container { max-width: 1000px; margin: 0 auto; }
         .header { 
-            background: rgba(255, 255, 255, 0.95);
-            backdrop-filter: blur(10px);
+            background: white;
             padding: 30px;
             border-radius: 20px;
             text-align: center;
             margin-bottom: 30px;
-            box-shadow: 0 8px 32px rgba(0,0,0,0.1);
+            box-shadow: 0 10px 30px rgba(0,0,0,0.1);
         }
-        .badge {
-            display: inline-block;
-            background: linear-gradient(45deg, #4CAF50, #45a049);
+        .whatsapp-ready {
+            background: #25D366;
             color: white;
-            padding: 8px 16px;
-            border-radius: 25px;
-            font-size: 0.9em;
-            margin: 5px;
-            font-weight: 500;
+            padding: 20px;
+            border-radius: 15px;
+            margin: 20px 0;
+            text-align: center;
         }
-        .status { color: #4CAF50; font-weight: bold; }
-        .webhook-url {
-            background: #f5f5f5;
-            padding: 15px;
-            border-radius: 12px;
-            font-family: 'Courier New', monospace;
-            font-size: 0.9em;
-            word-break: break-all;
-            border: 2px dashed #667eea;
-            margin: 10px 0;
-        }
-        .whatsapp-setup {
-            background: #e8f5e8;
+        .webhook-box {
+            background: #f8f9fa;
             padding: 20px;
             border-radius: 12px;
-            border-right: 4px solid #25D366;
-            margin: 20px 0;
+            font-family: monospace;
+            word-break: break-all;
+            border: 2px solid #25D366;
+            margin: 15px 0;
         }
-        .btn { 
-            background: linear-gradient(45deg, #667eea, #764ba2);
+        .btn {
+            background: #25D366;
             color: white;
             border: none;
             padding: 12px 24px;
-            border-radius: 12px;
+            border-radius: 8px;
             cursor: pointer;
             margin: 5px;
-            font-size: 1em;
             font-weight: 500;
-            transition: all 0.3s ease;
         }
-        .btn:hover { 
-            transform: translateY(-2px);
-            box-shadow: 0 5px 15px rgba(0,0,0,0.2);
+        .btn:hover { background: #128C7E; }
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            margin: 20px 0;
+        }
+        .stat-card {
+            background: white;
+            padding: 20px;
+            border-radius: 12px;
+            text-align: center;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.1);
+        }
+        .instructions {
+            background: white;
+            padding: 25px;
+            border-radius: 15px;
+            margin: 20px 0;
+        }
+        .step {
+            background: #f0f8f0;
+            padding: 15px;
+            margin: 10px 0;
+            border-radius: 8px;
+            border-right: 4px solid #25D366;
         }
     </style>
 </head>
 <body>
     <div class="container">
         <div class="header">
-            <h1>🤖 בוט מספרת ירון - ענן</h1>
-            <p style="margin: 15px 0;">
-                <span class="badge">☁️ Render Cloud</span>
-                <span class="badge">🔄 24/7 זמין</span>
-                <span class="badge">⚡ מוכן לוואטסאפ</span>
-            </p>
-            <div style="margin-top: 20px;">
-                <span class="status">🟢 פעיל ומוכן לחיבור וואטסאפ</span>
+            <h1>🤖 בוט מספרת ירון</h1>
+            <div class="whatsapp-ready">
+                <h2>📱 מוכן לחיבור עם WhatsApp!</h2>
+                <p>הבוט פעיל ומחכה לחיבור עם Meta Business</p>
             </div>
         </div>
 
-        <div class="whatsapp-setup">
-            <h3>📱 הגדרות חיבור וואטסאפ</h3>
+        <div class="instructions">
+            <h3>📋 הוראות חיבור למטא ביזנס:</h3>
             
-            <h4>🔗 Webhook URL (העתק למטא ביזנס):</h4>
-            <div class="webhook-url" id="webhook-url">${appUrl}/api/webhook</div>
-            <button class="btn" onclick="copyWebhookUrl()">📋 העתק Webhook URL</button>
-            
-            <h4 style="margin-top: 20px;">🔑 Verify Token:</h4>
-            <p>הגדר במשתני סביבה של Render: <code>VERIFY_TOKEN=your_secret_token</code></p>
-            
-            <h4 style="margin-top: 20px;">⚙️ שלבי החיבור:</h4>
-            <ol style="margin: 10px 0; text-align: right;">
-                <li>העתק את ה-Webhook URL למטא ביזנס</li>
-                <li>הגדר Verify Token</li>
-                <li>אמת את ה-Webhook</li>
-                <li>הפעל את ההודעות</li>
-            </ol>
+            <div class="step">
+                <strong>1. העתק את ה-Webhook URL:</strong>
+                <div class="webhook-box" id="webhook-url">${appUrl}/api/webhook</div>
+                <button class="btn" onclick="copyWebhook()">📋 העתק URL</button>
+            </div>
+
+            <div class="step">
+                <strong>2. הגדר Verify Token:</strong>
+                <div class="webhook-box">yaron_salon_webhook_2024</div>
+                <button class="btn" onclick="copyToken()">📋 העתק Token</button>
+            </div>
+
+            <div class="step">
+                <strong>3. במטא ביזנס:</strong>
+                <ul style="text-align: right; margin: 10px 0;">
+                    <li>לך להגדרות WhatsApp Business API</li>
+                    <li>הדבק את ה-Webhook URL</li>
+                    <li>הדבק את ה-Verify Token</li>
+                    <li>בחר Events: messages, message_deliveries</li>
+                    <li>לחץ "אמת Webhook"</li>
+                </ul>
+            </div>
         </div>
 
-        <div style="text-align: center; margin-top: 30px;">
-            <h3>🎯 הבוט מוכן לקבל הודעות מוואטסאפ!</h3>
-            <button class="btn" onclick="testWebhook()">🧪 בדוק חיבור</button>
+        <div class="stats-grid">
+            <div class="stat-card">
+                <h3>📊 סטטוס</h3>
+                <p style="color: #25D366; font-weight: bold;">🟢 פעיל</p>
+                <p id="uptime">זמן הפעלה: טוען...</p>
+            </div>
+            
+            <div class="stat-card">
+                <h3>💬 הודעות</h3>
+                <p style="font-size: 2em; color: #25D366;" id="messageCount">0</p>
+                <p>הודעות עובדו</p>
+            </div>
+            
+            <div class="stat-card">
+                <h3>🧠 AI</h3>
+                <p style="color: #25D366;">ניתוח רגשות פעיל</p>
+                <p>זיהוי כוונות מתקדם</p>
+            </div>
         </div>
+
+        <div style="text-align: center; margin: 30px 0;">
+            <button class="btn" onclick="testBot()">🧪 בדוק בוט</button>
+            <button class="btn" onclick="loadStats()">📊 רענן נתונים</button>
+        </div>
+
+        <div id="result" style="background: white; padding: 20px; border-radius: 12px; margin: 20px 0; display: none;"></div>
     </div>
 
     <script>
-        function copyWebhookUrl() {
+        function copyWebhook() {
             const url = document.getElementById('webhook-url').textContent;
             navigator.clipboard.writeText(url).then(() => {
-                alert('✅ Webhook URL הועתק לזיכרון!\\n\\nהדבק אותו במטא ביזנס > הגדרות Webhook');
-            }).catch(() => {
-                alert('❌ לא ניתן להעתיק. URL: ' + url);
+                alert('✅ Webhook URL הועתק!\\nהדבק אותו במטא ביזנס');
             });
         }
 
-        async function testWebhook() {
+        function copyToken() {
+            navigator.clipboard.writeText('yaron_salon_webhook_2024').then(() => {
+                alert('✅ Verify Token הועתק!\\nהדבק אותו במטא ביזנס');
+            });
+        }
+
+        async function testBot() {
             try {
-                const response = await fetch('${appUrl}/api/webhook', {
+                const response = await fetch('${appUrl}/api/message', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         phone: '0501234567',
-                        message: 'בדיקת חיבור וואטסאפ 🚀'
+                        message: 'שלום, כמה עולה תספורת גבר?'
                     })
                 });
                 
                 const data = await response.json();
-                alert('✅ בדיקת Webhook הצליחה!\\nהבוט מוכן לקבל הודעות מוואטסאפ.');
+                document.getElementById('result').style.display = 'block';
+                document.getElementById('result').innerHTML = 
+                    '<h4>🧪 תוצאת בדיקה:</h4>' +
+                    '<p><strong>הודעה:</strong> "שלום, כמה עולה תספורת גבר?"</p>' +
+                    '<p><strong>תשובת הבוט:</strong> ' + data.response + '</p>' +
+                    '<p><strong>רגש זוהה:</strong> ' + data.emotion + '</p>';
+                
+                loadStats();
             } catch (error) {
                 alert('❌ שגיאה בבדיקה: ' + error.message);
             }
         }
+
+        async function loadStats() {
+            try {
+                const response = await fetch('${appUrl}/api/stats');
+                const data = await response.json();
+                
+                document.getElementById('messageCount').textContent = data.totalMessages || 0;
+                if (data.server) {
+                    document.getElementById('uptime').textContent = 
+                        'זמן הפעלה: ' + (data.server.uptimeFormatted || 'N/A');
+                }
+            } catch (error) {
+                console.error('שגיאה בטעינת נתונים:', error);
+            }
+        }
+
+        // טעינה ראשונית
+        loadStats();
+        setInterval(loadStats, 30000); // רענון כל 30 שניות
     </script>
 </body>
-</html>
-        `;
+</html>`;
         
         res.setHeader('Content-Type', 'text/html; charset=utf-8');
         res.writeHead(200);
@@ -468,35 +676,23 @@ class RenderBotServer {
     start() {
         this.server.listen(this.port, () => {
             console.log('☁️ ========================================');
-            console.log('🤖 Render Bot Server Started Successfully!');
+            console.log('🤖 Yaron Salon Bot Server Started!');
             console.log(`🌐 Port: ${this.port}`);
-            console.log(`🎯 Environment: ${process.env.NODE_ENV || 'development'}`);
-            console.log('📡 All API endpoints ready');
-            console.log('💬 WhatsApp webhook ready at: /api/webhook');
+            console.log('📱 WhatsApp webhook ready at: /api/webhook');
             console.log('❤️ Health check: /health');
             console.log('☁️ ========================================');
-            
-            // הצגת סטטיסטיקות ראשוניות
-            console.log(`📊 Initial stats: ${this.bot.customers.length} customers loaded`);
         });
         
-        // הוספת graceful shutdown
         process.on('SIGTERM', this.gracefulShutdown.bind(this));
         process.on('SIGINT', this.gracefulShutdown.bind(this));
     }
     
     gracefulShutdown() {
-        console.log('🛑 Received shutdown signal, closing server gracefully...');
+        console.log('🛑 Shutting down gracefully...');
         this.server.close(() => {
-            console.log('✅ Server closed successfully');
+            console.log('✅ Server closed');
             process.exit(0);
         });
-        
-        // כפה סגירה אחרי 10 שניות
-        setTimeout(() => {
-            console.log('⚠️ Force closing server');
-            process.exit(1);
-        }, 10000);
     }
 }
 
