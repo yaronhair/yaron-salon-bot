@@ -1,266 +1,509 @@
+// server.js - שרת ענן מותאם ל-Render (מתוקן)
+
 const http = require('http');
 const url = require('url');
 const fs = require('fs');
-const path = require('path');
 
-// קריאת נתוני הלקוחות
-let customers = [];
-try {
-    const csvData = fs.readFileSync(path.join(__dirname, 'customers.csv'), 'utf8');
-    const lines = csvData.split('\n').filter(line => line.trim());
-    customers = lines.slice(1).map(line => {
-        const [name, phone, lastVisit, preferredStyle, notes] = line.split(',');
-        return { name, phone, lastVisit, preferredStyle, notes };
-    });
-} catch (error) {
-    console.log('שגיאה בקריאת קובץ הלקוחות:', error.message);
-}
+// ייבוא הבוט
+const YaronSalonBot = require('./yaron-salon-bot');
 
-// יצירת השרת
-const server = http.createServer((req, res) => {
-    const parsedUrl = url.parse(req.url, true);
-    const pathname = parsedUrl.pathname;
-
-    // CORS headers
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-
-    if (req.method === 'OPTIONS') {
-        res.writeHead(200);
-        res.end();
-        return;
+class RenderBotServer {
+    constructor() {
+        this.port = process.env.PORT || 3000;
+        
+        // אתחול הבוט עם נתוני דוגמה אם אין קובץ לקוחות
+        this.initializeBot();
+        this.setupServer();
+        
+        console.log('🌐 Render Bot Server initializing...');
     }
 
-    if (pathname === '/') {
-        // דף בית - דשבורד
-        res.setHeader('Content-Type', 'text/html; charset=utf-8');
-        res.writeHead(200);
-        res.end(`
+    initializeBot() {
+        try {
+            // נסיון לטעון קובץ לקוחות קיים
+            this.bot = new YaronSalonBot('./customers.csv');
+        } catch (error) {
+            console.log('📋 No customers file found, creating sample data...');
+            this.createSampleData();
+            this.bot = new YaronSalonBot('./customers.csv');
+        }
+        
+        this.bot.start();
+        console.log('✅ Bot initialized successfully');
+    }
+
+    createSampleData() {
+        // יצירת נתוני דוגמה אם אין קובץ לקוחות
+        const sampleData = `שם,טלפון,ביקור אחרון,טיפולים,הערות
+דוגמה ראשונה,0501234567,2024-01-15,תספורת גבר,לקוח VIP
+דוגמה שנייה,0527654321,2024-02-10,קרקפת ושיקום,בעיות קרקפת
+דוגמה שלישית,0503456789,2024-01-20,גוונים וצבע,אוהבת גוונים חמים`;
+        
+        try {
+            fs.writeFileSync('./customers.csv', sampleData);
+            console.log('📝 Sample customer data created');
+        } catch (error) {
+            console.log('⚠️ Could not create sample data, using empty dataset');
+        }
+    }
+
+    setupServer() {
+        this.server = http.createServer((req, res) => {
+            this.handleRequest(req, res);
+        });
+    }
+
+    handleRequest(req, res) {
+        const parsedUrl = url.parse(req.url, true);
+        const path = parsedUrl.pathname;
+        
+        // הגדרת headers לבטיחות וCORS
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+        res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+        res.setHeader('X-Content-Type-Options', 'nosniff');
+        res.setHeader('X-Frame-Options', 'DENY');
+        res.setHeader('X-XSS-Protection', '1; mode=block');
+        
+        if (req.method === 'OPTIONS') {
+            res.writeHead(200);
+            res.end();
+            return;
+        }
+
+        try {
+            if (path === '/') {
+                this.serveDashboard(req, res);
+            } else if (path === '/api/message' && req.method === 'POST') {
+                this.handleMessage(req, res);
+            } else if (path === '/api/webhook' || path === '/webhook') {
+                this.handleWebhook(req, res);
+            } else if (path === '/api/stats') {
+                this.handleStats(res);
+            } else if (path === '/health' || path === '/api/health') {
+                this.handleHealth(res);
+            } else if (path === '/api/prices') {
+                this.handlePrices(res);
+            } else {
+                this.handle404(res);
+            }
+        } catch (error) {
+            console.error('🚨 Server error:', error);
+            this.handleError(res, error);
+        }
+    }
+
+    handleMessage(req, res) {
+        let body = '';
+        
+        req.on('data', chunk => {
+            body += chunk.toString();
+        });
+
+        req.on('end', () => {
+            try {
+                const data = JSON.parse(body);
+                const { phone, message } = data;
+
+                if (!phone || !message) {
+                    this.sendResponse(res, 400, { error: 'Missing phone or message' });
+                    return;
+                }
+
+                console.log(`📱 [${new Date().toISOString()}] ${phone}: "${message}"`);
+
+                const response = this.bot.handleMessage(phone, message);
+                const emotion = this.bot.emotionAnalyzer.analyzeEmotion(message);
+
+                const result = {
+                    success: true,
+                    response: response,
+                    emotion: emotion.dominantEmotion,
+                    intensity: emotion.intensity,
+                    needsHuman: emotion.needsHumanResponse,
+                    timestamp: new Date().toISOString(),
+                    server: 'render-cloud',
+                    messageId: Date.now().toString()
+                };
+
+                this.sendResponse(res, 200, result);
+
+            } catch (error) {
+                console.error('❌ Message handling error:', error);
+                this.sendResponse(res, 400, { 
+                    error: 'Invalid request format',
+                    details: error.message 
+                });
+            }
+        });
+
+        req.on('error', (error) => {
+            console.error('❌ Request error:', error);
+            this.sendResponse(res, 500, { error: 'Request processing failed' });
+        });
+    }
+
+    handleWebhook(req, res) {
+        // תמיכה ב-GET לאימות webhook
+        if (req.method === 'GET') {
+            const parsedUrl = url.parse(req.url, true);
+            const mode = parsedUrl.query['hub.mode'];
+            const token = parsedUrl.query['hub.verify_token'];
+            const challenge = parsedUrl.query['hub.challenge'];
+
+            // אימות webhook למטא/וואטסאפ
+            if (mode === 'subscribe' && token === process.env.VERIFY_TOKEN) {
+                console.log('✅ Webhook verified successfully');
+                res.writeHead(200, { 'Content-Type': 'text/plain' });
+                res.end(challenge);
+                return;
+            } else {
+                console.log('❌ Webhook verification failed');
+                res.writeHead(403);
+                res.end('Forbidden');
+                return;
+            }
+        }
+
+        // טיפול ב-POST
+        let body = '';
+        
+        req.on('data', chunk => {
+            body += chunk.toString();
+        });
+
+        req.on('end', () => {
+            try {
+                const webhookData = JSON.parse(body);
+                console.log('📥 Webhook received:', {
+                    timestamp: new Date().toISOString(),
+                    data: webhookData
+                });
+
+                // עיבוד WhatsApp webhook format
+                if (webhookData.entry && webhookData.entry[0] && webhookData.entry[0].changes) {
+                    const changes = webhookData.entry[0].changes[0];
+                    if (changes.value && changes.value.messages) {
+                        const message = changes.value.messages[0];
+                        const phone = message.from;
+                        const text = message.text ? message.text.body : '';
+
+                        if (phone && text) {
+                            const response = this.bot.handleMessage(phone, text);
+                            console.log(`📱 WhatsApp message processed: ${phone} -> ${text}`);
+                        }
+                    }
+                }
+
+                // תמיד להחזיר 200 ל-WhatsApp
+                this.sendResponse(res, 200, { 
+                    received: true,
+                    timestamp: new Date().toISOString()
+                });
+
+            } catch (error) {
+                console.error('❌ Webhook error:', error);
+                this.sendResponse(res, 200, { 
+                    received: true,
+                    error: 'Invalid format',
+                    timestamp: new Date().toISOString()
+                });
+            }
+        });
+    }
+
+    handleStats(res) {
+        try {
+            const stats = this.bot.getAnalytics();
+            const serverStats = {
+                ...stats,
+                server: {
+                    platform: 'render',
+                    uptime: Math.floor(process.uptime()),
+                    uptimeFormatted: this.formatUptime(process.uptime()),
+                    memory: {
+                        used: Math.round(process.memoryUsage().heapUsed / 1024 / 1024),
+                        total: Math.round(process.memoryUsage().heapTotal / 1024 / 1024)
+                    },
+                    nodeVersion: process.version,
+                    timestamp: new Date().toISOString(),
+                    environment: process.env.NODE_ENV || 'development'
+                },
+                recentMessages: this.bot.conversationLog.slice(-10).map(msg => ({
+                    ...msg,
+                    message: msg.message.substring(0, 100) // הגבלת אורך להצגה
+                }))
+            };
+
+            this.sendResponse(res, 200, serverStats);
+        } catch (error) {
+            console.error('❌ Stats error:', error);
+            this.sendResponse(res, 500, { error: 'Failed to get stats' });
+        }
+    }
+
+    handleHealth(res) {
+        const health = {
+            status: 'healthy',
+            timestamp: new Date().toISOString(),
+            uptime: Math.floor(process.uptime()),
+            version: '1.0.0',
+            platform: 'render',
+            bot: {
+                customers: this.bot.customers.length,
+                messages: this.bot.conversationLog.length,
+                status: 'operational'
+            },
+            memory: {
+                used: Math.round(process.memoryUsage().heapUsed / 1024 / 1024),
+                total: Math.round(process.memoryUsage().heapTotal / 1024 / 1024)
+            }
+        };
+
+        this.sendResponse(res, 200, health);
+    }
+
+    handlePrices(res) {
+        try {
+            const prices = {
+                ...this.bot.priceList,
+                lastUpdated: new Date().toISOString(),
+                currency: 'ILS'
+            };
+            this.sendResponse(res, 200, prices);
+        } catch (error) {
+            this.sendResponse(res, 500, { error: 'Failed to get prices' });
+        }
+    }
+
+    handle404(res) {
+        const notFound = {
+            error: 'Not Found',
+            message: 'API endpoint not found',
+            availableEndpoints: [
+                'GET /',
+                'POST /api/message',
+                'GET/POST /api/webhook', 
+                'GET /api/stats',
+                'GET /api/health',
+                'GET /api/prices'
+            ],
+            timestamp: new Date().toISOString()
+        };
+        
+        this.sendResponse(res, 404, notFound);
+    }
+
+    handleError(res, error) {
+        this.sendResponse(res, 500, {
+            error: 'Internal Server Error',
+            message: 'Something went wrong',
+            timestamp: new Date().toISOString()
+        });
+    }
+
+    sendResponse(res, statusCode, data) {
+        res.setHeader('Content-Type', 'application/json; charset=utf-8');
+        res.writeHead(statusCode);
+        res.end(JSON.stringify(data, null, 2));
+    }
+
+    formatUptime(uptimeSeconds) {
+        const hours = Math.floor(uptimeSeconds / 3600);
+        const minutes = Math.floor((uptimeSeconds % 3600) / 60);
+        return `${hours}ש ${minutes}ד`;
+    }
+
+    serveDashboard(req, res) {
+        const appUrl = req.headers.host ? `https://${req.headers.host}` : 'http://localhost:3000';
+        
+        const html = `
 <!DOCTYPE html>
-<html dir="rtl" lang="he">
+<html dir="rtl">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>🤖 בוט מספרת ירון - Dashboard</title>
+    <title>בוט מספרת ירון - Render Cloud</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🤖</text></svg>">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); min-height: 100vh; direction: rtl; }
-        .container { max-width: 1200px; margin: 0 auto; padding: 20px; }
-        .header { background: rgba(255,255,255,0.95); border-radius: 20px; padding: 30px; margin-bottom: 30px; text-align: center; box-shadow: 0 10px 30px rgba(0,0,0,0.1); }
-        .header h1 { color: #333; font-size: 2.5rem; margin-bottom: 10px; }
-        .header p { color: #666; font-size: 1.2rem; }
-        .status { display: inline-block; background: #4CAF50; color: white; padding: 8px 20px; border-radius: 25px; margin-top: 15px; }
-        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; margin-bottom: 30px; }
-        .card { background: rgba(255,255,255,0.95); border-radius: 15px; padding: 25px; box-shadow: 0 5px 20px rgba(0,0,0,0.1); }
-        .card h3 { color: #333; font-size: 1.3rem; margin-bottom: 15px; }
-        .btn { background: linear-gradient(45deg, #667eea, #764ba2); color: white; border: none; padding: 12px 25px; border-radius: 25px; cursor: pointer; font-size: 1rem; margin: 5px; transition: all 0.3s; }
-        .btn:hover { transform: translateY(-2px); box-shadow: 0 5px 15px rgba(0,0,0,0.2); }
-        .result { background: #f8f9fa; border-radius: 10px; padding: 20px; margin-top: 20px; white-space: pre-line; max-height: 300px; overflow-y: auto; display: none; }
-        .stats { display: flex; justify-content: space-around; text-align: center; }
-        .stat { background: #667eea; color: white; padding: 20px; border-radius: 10px; flex: 1; margin: 0 10px; }
-        .stat h4 { font-size: 2rem; margin-bottom: 5px; }
-        .test-area { background: rgba(255,255,255,0.1); border-radius: 15px; padding: 25px; margin-top: 20px; }
-        .input-group { margin-bottom: 15px; }
-        .input-group label { display: block; color: white; margin-bottom: 5px; font-weight: bold; }
-        .input-group input, .input-group textarea { width: 100%; padding: 10px; border: none; border-radius: 8px; font-size: 1rem; }
-        .api-docs { background: #2c3e50; color: #ecf0f1; border-radius: 10px; padding: 20px; margin-top: 20px; font-family: 'Courier New', monospace; }
+        body { 
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        .container { max-width: 1200px; margin: 0 auto; }
+        .header { 
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(10px);
+            padding: 30px;
+            border-radius: 20px;
+            text-align: center;
+            margin-bottom: 30px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.1);
+        }
+        .badge {
+            display: inline-block;
+            background: linear-gradient(45deg, #4CAF50, #45a049);
+            color: white;
+            padding: 8px 16px;
+            border-radius: 25px;
+            font-size: 0.9em;
+            margin: 5px;
+            font-weight: 500;
+        }
+        .status { color: #4CAF50; font-weight: bold; }
+        .webhook-url {
+            background: #f5f5f5;
+            padding: 15px;
+            border-radius: 12px;
+            font-family: 'Courier New', monospace;
+            font-size: 0.9em;
+            word-break: break-all;
+            border: 2px dashed #667eea;
+            margin: 10px 0;
+        }
+        .whatsapp-setup {
+            background: #e8f5e8;
+            padding: 20px;
+            border-radius: 12px;
+            border-right: 4px solid #25D366;
+            margin: 20px 0;
+        }
+        .btn { 
+            background: linear-gradient(45deg, #667eea, #764ba2);
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 12px;
+            cursor: pointer;
+            margin: 5px;
+            font-size: 1em;
+            font-weight: 500;
+            transition: all 0.3s ease;
+        }
+        .btn:hover { 
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(0,0,0,0.2);
+        }
     </style>
 </head>
 <body>
     <div class="container">
         <div class="header">
-            <h1>🤖 בוט מספרת ירון</h1>
-            <p>מערכת AI חכמה לניהול לקוחות ושירות אוטומטי</p>
-            <div class="status">🟢 פעיל ועובד</div>
-        </div>
-
-        <div class="grid">
-            <div class="card">
-                <h3>📊 סטטיסטיקות</h3>
-                <div class="stats">
-                    <div class="stat">
-                        <h4>${customers.length}</h4>
-                        <p>לקוחות</p>
-                    </div>
-                    <div class="stat">
-                        <h4>100%</h4>
-                        <p>זמינות</p>
-                    </div>
-                </div>
-                <button class="btn" onclick="loadStats()">🔄 רענן נתונים</button>
-            </div>
-
-            <div class="card">
-                <h3>🧪 בדיקות מהירות</h3>
-                <button class="btn" onclick="testMessage()">💬 בדוק הודעה</button>
-                <button class="btn" onclick="testEmotion()">🎭 בדוק רגשות</button>
-                <button class="btn" onclick="testCustomers()">👥 בדוק לקוחות</button>
-                <button class="btn" onclick="testApi()">🔗 בדוק API</button>
-            </div>
-
-            <div class="card">
-                <h3>🛠️ כלים מתקדמים</h3>
-                <button class="btn" onclick="viewApiDocs()">📖 תיעוד API</button>
-                <button class="btn" onclick="testWebhook()">🔗 בדוק Webhook</button>
-                <button class="btn" onclick="exportData()">📥 ייצוא נתונים</button>
-                <button class="btn" onclick="healthCheck()">❤️ בדיקת בריאות</button>
+            <h1>🤖 בוט מספרת ירון - ענן</h1>
+            <p style="margin: 15px 0;">
+                <span class="badge">☁️ Render Cloud</span>
+                <span class="badge">🔄 24/7 זמין</span>
+                <span class="badge">⚡ מוכן לוואטסאפ</span>
+            </p>
+            <div style="margin-top: 20px;">
+                <span class="status">🟢 פעיל ומוכן לחיבור וואטסאפ</span>
             </div>
         </div>
 
-        <div class="test-area">
-            <h3 style="color: white; margin-bottom: 20px;">🧪 אזור בדיקות אינטראקטיבי</h3>
+        <div class="whatsapp-setup">
+            <h3>📱 הגדרות חיבור וואטסאפ</h3>
             
-            <div class="input-group">
-                <label>💬 הודעה לבדיקה:</label>
-                <textarea id="testMessage" rows="3" placeholder="כתוב כאן הודעה לבדיקה...">שלום, אני רוצה לקבוע תור לקיצוץ</textarea>
-            </div>
+            <h4>🔗 Webhook URL (העתק למטא ביזנס):</h4>
+            <div class="webhook-url" id="webhook-url">${appUrl}/api/webhook</div>
+            <button class="btn" onclick="copyWebhookUrl()">📋 העתק Webhook URL</button>
             
-            <div class="input-group">
-                <label>📱 מספר טלפון לבדיקה:</label>
-                <input type="text" id="testPhone" placeholder="050-1234567" value="050-1234567">
-            </div>
+            <h4 style="margin-top: 20px;">🔑 Verify Token:</h4>
+            <p>הגדר במשתני סביבה של Render: <code>VERIFY_TOKEN=your_secret_token</code></p>
             
-            <button class="btn" onclick="runFullTest()">🚀 הרץ בדיקה מלאה</button>
+            <h4 style="margin-top: 20px;">⚙️ שלבי החיבור:</h4>
+            <ol style="margin: 10px 0; text-align: right;">
+                <li>העתק את ה-Webhook URL למטא ביזנס</li>
+                <li>הגדר Verify Token</li>
+                <li>אמת את ה-Webhook</li>
+                <li>הפעל את ההודעות</li>
+            </ol>
         </div>
 
-        <div id="result" class="result"></div>
-
-        <div class="api-docs">
-            <h3>🔗 API Endpoints</h3>
-            <p><strong>POST</strong> /api/message - שליחת הודעה</p>
-            <p><strong>GET</strong> /api/health - בדיקת בריאות</p>
-            <p><strong>GET</strong> /api/stats - סטטיסטיקות</p>
-            <p><strong>Base URL:</strong> ${req.headers.host}</p>
+        <div style="text-align: center; margin-top: 30px;">
+            <h3>🎯 הבוט מוכן לקבל הודעות מוואטסאפ!</h3>
+            <button class="btn" onclick="testWebhook()">🧪 בדוק חיבור</button>
         </div>
     </div>
 
     <script>
-        function showResult(text) {
-            const result = document.getElementById('result');
-            result.style.display = 'block';
-            result.textContent = text;
+        function copyWebhookUrl() {
+            const url = document.getElementById('webhook-url').textContent;
+            navigator.clipboard.writeText(url).then(() => {
+                alert('✅ Webhook URL הועתק לזיכרון!\\n\\nהדבק אותו במטא ביזנס > הגדרות Webhook');
+            }).catch(() => {
+                alert('❌ לא ניתן להעתיק. URL: ' + url);
+            });
         }
 
-        function testMessage() {
-            const message = document.getElementById('testMessage').value;
-            showResult('🧪 בדיקת הודעה: "' + message + '"\\n\\n✅ ההודעה התקבלה בהצלחה\\n🎯 זוהה כוונה: קביעת תור\\n💡 תשובה אוטומטית: "שלום! אשמח לעזור לך לקבוע תור. איזה יום ושעה נוחים לך?"');
-        }
-
-        function testEmotion() {
-            showResult('🎭 בדיקת זיהוי רגשות:\\n\\n😊 שמחה: 85%\\n😐 ניטרלי: 10%\\n😤 עצבנות: 3%\\n😢 עצב: 2%\\n\\n✅ הזיהוי פועל בהצלחה!');
-        }
-
-        function testCustomers() {
-            showResult('👥 בדיקת מאגר לקוחות:\\n\\n📊 סה"כ לקוחות: ${customers.length}\\n✅ הקובץ נטען בהצלחה\\n🔍 דוגמא: ' + (customers[0] ? customers[0].name : 'אין נתונים'));
-        }
-
-        function testApi() {
-            showResult('🔗 בדיקת API:\\n\\n✅ השרת פועל על פורט ' + (process.env.PORT || 3000) + '\\n✅ CORS מוגדר\\n✅ JSON parsing פעיל\\n✅ כל ה-endpoints זמינים');
-        }
-
-        function testWebhook() {
-            showResult('🔗 בדיקת Webhook:\\n\\nURL: https://' + window.location.host + '/api/webhook\\n✅ מוכן לקבלת נתונים\\n✅ תומך ב-POST requests\\n✅ מחזיר תשובות JSON');
-        }
-
-        function viewApiDocs() {
-            showResult('📖 תיעוד API:\\n\\n🔗 POST /api/message\\nBody: {"phone": "050-1234567", "message": "הודעה"}\\n\\n🔗 POST /api/webhook\\nBody: {"phone": "050-1234567", "message": "הודעה"}\\n\\n🔗 GET /api/health\\nResponse: {"status": "ok"}\\n\\n🔗 GET /api/stats\\nResponse: {"customers": count, "uptime": time}');
-        }
-
-        function exportData() {
-            showResult('📥 ייצוא נתונים:\\n\\n✅ ${customers.length} לקוחות מוכנים לייצוא\\n📊 פורמטים זמינים: JSON, CSV\\n📁 הנתונים נשמרים במקומם');
-        }
-
-        function healthCheck() {
-            showResult('❤️ בדיקת בריאות המערכת:\\n\\n✅ השרת פועל תקין\\n✅ זיכרון: OK\\n✅ מעבד: OK\\n✅ קבצים: נטענו בהצלחה\\n✅ API: פעיל\\n✅ מוכן לעבודה!');
-        }
-
-        function loadStats() {
-            showResult('🔄 טוען נתונים מעודכנים...\\n\\n📊 לקוחות פעילים: ${customers.length}\\n⏰ זמן פעילות: ' + Math.floor(Math.random() * 24) + ' שעות\\n💾 שימוש בזיכרון: ' + Math.floor(Math.random() * 50 + 30) + '%\\n🌐 בקשות היום: ' + Math.floor(Math.random() * 100 + 50));
-        }
-
-        function runFullTest() {
-            const message = document.getElementById('testMessage').value;
-            const phone = document.getElementById('testPhone').value;
-            
-            showResult('🚀 מריץ בדיקה מלאה...\\n\\n' +
-                      '📱 טלפון: ' + phone + '\\n' +
-                      '💬 הודעה: "' + message + '"\\n\\n' +
-                      '🔍 מתחיל עיבוד...\\n' +
-                      '✅ ההודעה התקבלה\\n' +
-                      '🧠 מעבד עם AI...\\n' +
-                      '🎯 זיהוי כוונה: קביעת תור\\n' +
-                      '😊 זיהוי רגש: שמחה (87%)\\n' +
-                      '👤 זיהוי לקוח: ' + (customers.find(c => c.phone.includes(phone.slice(-7))) ? 'לקוח קיים' : 'לקוח חדש') + '\\n' +
-                      '💡 תשובה: "שלום! אשמח לעזור לך לקבוע תור. איזה יום ושעה נוחים לך?"\\n\\n' +
-                      '✅ הבדיקה הושלמה בהצלחה!');
+        async function testWebhook() {
+            try {
+                const response = await fetch('${appUrl}/api/webhook', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        phone: '0501234567',
+                        message: 'בדיקת חיבור וואטסאפ 🚀'
+                    })
+                });
+                
+                const data = await response.json();
+                alert('✅ בדיקת Webhook הצליחה!\\nהבוט מוכן לקבל הודעות מוואטסאפ.');
+            } catch (error) {
+                alert('❌ שגיאה בבדיקה: ' + error.message);
+            }
         }
     </script>
 </body>
-</html>`);
-        return;
-    }
-
-    if (pathname === '/api/health') {
-        res.setHeader('Content-Type', 'application/json');
+</html>
+        `;
+        
+        res.setHeader('Content-Type', 'text/html; charset=utf-8');
         res.writeHead(200);
-        res.end(JSON.stringify({
-            status: 'ok',
-            timestamp: new Date().toISOString(),
-            customers: customers.length,
-            uptime: process.uptime()
-        }));
-        return;
+        res.end(html);
     }
 
-    if (pathname === '/api/stats') {
-        res.setHeader('Content-Type', 'application/json');
-        res.writeHead(200);
-        res.end(JSON.stringify({
-            customers: customers.length,
-            uptime: Math.floor(process.uptime()),
-            timestamp: new Date().toISOString(),
-            status: 'active'
-        }));
-        return;
-    }
-
-    if (pathname === '/api/message' && req.method === 'POST') {
-        let body = '';
-        req.on('data', chunk => {
-            body += chunk.toString();
+    start() {
+        this.server.listen(this.port, () => {
+            console.log('☁️ ========================================');
+            console.log('🤖 Render Bot Server Started Successfully!');
+            console.log(`🌐 Port: ${this.port}`);
+            console.log(`🎯 Environment: ${process.env.NODE_ENV || 'development'}`);
+            console.log('📡 All API endpoints ready');
+            console.log('💬 WhatsApp webhook ready at: /api/webhook');
+            console.log('❤️ Health check: /health');
+            console.log('☁️ ========================================');
+            
+            // הצגת סטטיסטיקות ראשוניות
+            console.log(`📊 Initial stats: ${this.bot.customers.length} customers loaded`);
         });
         
-        req.on('end', () => {
-            try {
-                const data = JSON.parse(body);
-                const response = {
-                    success: true,
-                    message: 'הודעה התקבלה בהצלחה',
-                    echo: data,
-                    timestamp: new Date().toISOString()
-                };
-                
-                res.setHeader('Content-Type', 'application/json');
-                res.writeHead(200);
-                res.end(JSON.stringify(response));
-            } catch (error) {
-                res.setHeader('Content-Type', 'application/json');
-                res.writeHead(400);
-                res.end(JSON.stringify({ error: 'Invalid JSON' }));
-            }
-        });
-        return;
+        // הוספת graceful shutdown
+        process.on('SIGTERM', this.gracefulShutdown.bind(this));
+        process.on('SIGINT', this.gracefulShutdown.bind(this));
     }
+    
+    gracefulShutdown() {
+        console.log('🛑 Received shutdown signal, closing server gracefully...');
+        this.server.close(() => {
+            console.log('✅ Server closed successfully');
+            process.exit(0);
+        });
+        
+        // כפה סגירה אחרי 10 שניות
+        setTimeout(() => {
+            console.log('⚠️ Force closing server');
+            process.exit(1);
+        }, 10000);
+    }
+}
 
-    // 404
-    res.writeHead(404);
-    res.end('Not Found');
-});
+// הפעלת השרת
+if (require.main === module) {
+    const server = new RenderBotServer();
+    server.start();
+}
 
-const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
-    console.log(`🚀 Server running on port ${PORT}`);
-    console.log(`📊 Loaded ${customers.length} customers`);
-    console.log(`🌐 Visit: http://localhost:${PORT}`);
-});
+module.exports = RenderBotServer;
